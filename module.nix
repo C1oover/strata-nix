@@ -214,7 +214,7 @@ in
           --hf-token-file "/run/credentials/strata.service/hf-token" \
       '' + lib.optionalString (cfg.sampling != { }) ''
           --sampling-json ${pkgs.writeText "strata-sampling.json" (builtins.toJSON cfg.sampling)} \
-      '' + lib.concatMapStrings (x: ''--extra-arg ${lib.escapeShellArg x} '') cfg.extraEngineArgs
+      '' + lib.concatMapStrings (x: ''--extra-arg=${lib.escapeShellArg x} '') cfg.extraEngineArgs
       ));
 
       serviceConfig = {
