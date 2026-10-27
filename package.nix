@@ -147,9 +147,10 @@ cudaPackages.backendStdenv.mkDerivation {
 }
 EOF
 
-    # Install Python server, packing tools, data profiles, and gguf-py
-    cp -rL serve tools data chat.py $out/share/strata/
+# Install Python packages (serve, strata_control, strata_cli, tools, data) and gguf-py
+    cp -rL ${strataSrc}/. $out/share/strata/
     chmod -R u+w $out/share/strata
+    rm -rf $out/share/strata/{bench,docs,ref,src,include,metal,sycl,apps,third_party,.git*}
     mkdir -p $out/share/strata/third_party/llama.cpp
     cp -rL ${llamaSrc}/gguf-py $out/share/strata/third_party/llama.cpp/gguf-py
 
@@ -158,6 +159,7 @@ EOF
     makeWrapper ${pythonEnv}/bin/python $out/bin/strata-serve \
       --set STRATA_SHARE "$out/share/strata" \
       --set STRATA_GGUF_PY "$out/share/strata/third_party/llama.cpp/gguf-py" \
+      --prefix PYTHONPATH : "$out/share/strata" \
       --prefix PATH : "$out/libexec/strata" \
       --add-flags "$out/share/strata/serve/server.py"
 
@@ -165,10 +167,12 @@ EOF
       --set STRATA_SHARE "$out/share/strata" \
       --set STRATA_ENGINE_DIR "$out/libexec/strata" \
       --set STRATA_GGUF_PY "$out/share/strata/third_party/llama.cpp/gguf-py" \
+      --prefix PYTHONPATH : "$out/share/strata" \
       --prefix PATH : "$out/libexec/strata" \
       --add-flags "$out/share/strata/prepare.py"
 
     makeWrapper ${pythonEnv}/bin/python $out/bin/strata-chat \
+      --prefix PYTHONPATH : "$out/share/strata" \
       --add-flags "$out/share/strata/chat.py"
 
     runHook postInstall
