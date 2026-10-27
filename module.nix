@@ -232,6 +232,16 @@ in
         LimitMEMLOCK = "infinity";
         LimitRTTIME = "infinity";
 
+        DeviceAllow = [
+            "/dev/nvidia0 rw"
+            "/dev/nvidiactl rw"
+            "/dev/nvidia-uvm rw"
+            "/dev/nvidia-uvm-tools rw"
+            "/dev/nvidia-modeset rw"
+            "char-nvidia-frontend rw"
+            "char-dri rw"
+          ];
+
         LoadCredential =
           lib.optional (cfg.apiKeyFile != null) "api-key:${cfg.apiKeyFile}"
           ++ lib.optional (cfg.hfTokenFile != null) "hf-token:${cfg.hfTokenFile}";
