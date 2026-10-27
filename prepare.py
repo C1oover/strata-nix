@@ -183,6 +183,13 @@ def main() -> int:
         else:
             log(f"pack already built: {pack_dir}")
 
+        needs_experts_bin = a.low_ram or any(
+            x in ("--resident-experts", "--mmap-experts", "--resident-cpu-experts") for x in a.extra_arg
+        )
+        if needs_experts_bin and not (pack_dir / "experts.bin").exists():
+            log("building experts.bin for resident/mmap expert mode ...")
+            run_tool("iq_pack.py", "--gguf", shard1, "--out", pack_dir, "--compat-bf16", "--experts-bin")
+
         if a.low_ram and not (pack_dir / "experts.bin").exists():
             log("building experts.bin for low-RAM mmap mode ...")
             run_tool("iq_pack.py", "--gguf", shard1, "--out", pack_dir, "--compat-bf16", "--experts-bin")
@@ -237,7 +244,6 @@ def main() -> int:
             "max_tokens": 300,
             "threads": 8,
         }
-        args += ["--vision"]
         if a.vision_gpu:
             args += ["--vram-reserve-mib", "700"]
 
