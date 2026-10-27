@@ -14,7 +14,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, strata, llama-cpp }:
+  outputs = { self, nixpkgs, strata, llama-cpp } @ inputs:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
