@@ -77,7 +77,7 @@ in
     visionGpu = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Run the vision encoder (`strata-vision`) on the GPU (recommended for >=24 GB VRAM).";
+      description = "Run the vision encoder (`strata-vision`) on the GPU.";
     };
 
     mtp = lib.mkOption {
@@ -89,7 +89,7 @@ in
     lowRam = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Map expert weights from disk (`experts.bin`) instead of holding all experts in RAM.";
+      description = "Build `experts.bin` and enable `--resident-experts` (page-locks non-GPU experts in RAM with a 4 GiB safety floor and mmaps the rest).";
     };
 
     context = lib.mkOption {
@@ -125,7 +125,87 @@ in
     lazyLoad = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Start the HTTP server immediately and load model weights on the first request.";
+      description = "Start the HTTP server immediately and load model weights on the first request (`--lazy`).";
+    };
+
+    idleUnload = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 600;
+      description = "Unload the model after this many seconds without requests (`--idle-unload`).";
+    };
+
+    minFreeVramMib = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 16384;
+      description = "Load an unloaded model only when this much VRAM (MiB) is free, else answer HTTP 503 (`--min-free-vram-mib`).";
+    };
+
+    beforeLoad = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Command run before the model is loaded into VRAM (`--before-load`).";
+    };
+
+    parallel = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = "Number of simultaneous engine slots (`--parallel`).";
+    };
+
+    batchGroups = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Pipeline groups for batching: `auto` or a positive integer (`--batch-groups`).";
+    };
+
+    maxQueue = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      description = "Maximum inference calls waiting beyond effective engine slots; 0 refuses overload (`--max-queue`).";
+    };
+
+    queueTimeout = lib.mkOption {
+      type = lib.types.nullOr lib.types.number;
+      default = null;
+      description = "Maximum seconds waiting for the first engine turn (`--queue-timeout`).";
+    };
+
+    shutdownTimeout = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      description = "Graceful drain deadline in seconds (0..300) before active requests are cancelled (`--shutdown-timeout`).";
+    };
+
+    slotSavePath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Directory for saving/restoring conversation slots via POST /slots/0 (`--slot-save-path`).";
+    };
+
+    fitMaxTokens = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Clamp max_tokens to remaining context instead of rejecting with HTTP 400 (`--fit-max-tokens` / `--no-fit-max-tokens`).";
+    };
+
+    apiMonitor = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable `/api-monitor` keeping the last 100 requests in memory (`--api-monitor`).";
+    };
+
+    offline = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Do not fetch remote image URLs or start MCP/tool subprocesses (`--offline`).";
+    };
+
+    noApiKey = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Serve on the network without an API key (`--no-api-key`).";
     };
 
     apiKeyFile = lib.mkOption {
@@ -147,11 +227,25 @@ in
       description = "Default sampling parameters.";
     };
 
+    extraConfig = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      example = { allowed_hosts = [ "strata.local" ]; };
+      description = "Freeform JSON attributes merged into the top level of `config.json`.";
+    };
+
     extraEngineArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "--kv-streaming" "on" "--kv-grow" "--resident-experts" ];
-      description = "Extra CLI arguments appended to the Strata engine invocation.";
+      example = [ "--vram-reserve-mib" "2000" ];
+      description = "Freeform CLI arguments appended to the C++ `strata` engine invocation.";
+    };
+
+    extraServeArgs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "--batch-telemetry" ];
+      description = "Freeform CLI arguments appended to `strata-serve` (`serve/server.py`).";
     };
   };
 
@@ -162,8 +256,8 @@ in
         message = "services.strata: set either (`repo` and `files`) or `modelPaths`.";
       }
       {
-        assertion = cfg.host == "127.0.0.1" || cfg.host == "localhost" || cfg.apiKeyFile != null;
-        message = "services.strata: binding beyond loopback requires `apiKeyFile`.";
+        assertion = cfg.host == "127.0.0.1" || cfg.host == "localhost" || cfg.apiKeyFile != null || cfg.noApiKey;
+        message = "services.strata: binding beyond loopback requires `apiKeyFile` or `noApiKey = true`.";
       }
     ];
 
@@ -214,6 +308,8 @@ in
           --hf-token-file "/run/credentials/strata.service/hf-token" \
       '' + lib.optionalString (cfg.sampling != { }) ''
           --sampling-json ${pkgs.writeText "strata-sampling.json" (builtins.toJSON cfg.sampling)} \
+      '' + lib.optionalString (cfg.extraConfig != { }) ''
+          --extra-config-json ${pkgs.writeText "strata-extra-config.json" (builtins.toJSON cfg.extraConfig)} \
       '' + lib.concatMapStrings (x: ''--extra-arg=${lib.escapeShellArg x} '') cfg.extraEngineArgs
       ));
 
@@ -236,7 +332,30 @@ in
           lib.optional (cfg.apiKeyFile != null) "api-key:${cfg.apiKeyFile}"
           ++ lib.optional (cfg.hfTokenFile != null) "hf-token:${cfg.hfTokenFile}";
 
-        ExecStart = "${cfg.package}/bin/strata-serve --engine strata --config %S/strata/config.json --port ${toString cfg.port}";
+        ExecStart = lib.concatStringsSep " " (
+          [
+            "${cfg.package}/bin/strata-serve"
+            "--engine" "strata"
+            "--config" "%S/strata/config.json"
+            "--host" (lib.escapeShellArg cfg.host)
+            "--port" (toString cfg.port)
+          ]
+          ++ lib.optional cfg.lazyLoad "--lazy"
+          ++ lib.optionals (cfg.idleUnload != null) [ "--idle-unload" (toString cfg.idleUnload) ]
+          ++ lib.optionals (cfg.minFreeVramMib != null) [ "--min-free-vram-mib" (toString cfg.minFreeVramMib) ]
+          ++ lib.optionals (cfg.beforeLoad != null) [ "--before-load" (lib.escapeShellArg cfg.beforeLoad) ]
+          ++ lib.optionals (cfg.parallel != null) [ "--parallel" (toString cfg.parallel) ]
+          ++ lib.optionals (cfg.batchGroups != null) [ "--batch-groups" (lib.escapeShellArg cfg.batchGroups) ]
+          ++ lib.optionals (cfg.maxQueue != null) [ "--max-queue" (toString cfg.maxQueue) ]
+          ++ lib.optionals (cfg.queueTimeout != null) [ "--queue-timeout" (toString cfg.queueTimeout) ]
+          ++ lib.optionals (cfg.shutdownTimeout != null) [ "--shutdown-timeout" (toString cfg.shutdownTimeout) ]
+          ++ lib.optionals (cfg.slotSavePath != null) [ "--slot-save-path" (lib.escapeShellArg cfg.slotSavePath) ]
+          ++ [ (if cfg.fitMaxTokens then "--fit-max-tokens" else "--no-fit-max-tokens") ]
+          ++ lib.optional cfg.apiMonitor "--api-monitor"
+          ++ lib.optional cfg.offline "--offline"
+          ++ lib.optional cfg.noApiKey "--no-api-key"
+          ++ map lib.escapeShellArg cfg.extraServeArgs
+        );
 
         NoNewPrivileges = true;
         ProtectSystem = "strict";
