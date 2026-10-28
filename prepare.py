@@ -65,7 +65,7 @@ def download_file(url: str, dst: Path, token: str | None = None) -> None:
     part = dst.with_name(dst.name + ".part")
     have = part.stat().st_size if part.exists() else 0
 
-    for attempt in range(30):
+    for _ in range(30):
         try:
             req_headers = {**headers, "Range": f"bytes={have}-"} if have else headers
             req = urllib.request.Request(url, headers=req_headers)
@@ -145,6 +145,7 @@ def main() -> int:
     ap.add_argument("--api-key-file")
     ap.add_argument("--hf-token-file")
     ap.add_argument("--sampling-json")
+    ap.add_argument("--extra-config-json")
     ap.add_argument("--extra-arg", action="append", default=[])
     a = ap.parse_args()
 
@@ -190,10 +191,6 @@ def main() -> int:
             log("building experts.bin for resident/mmap expert mode ...")
             run_tool("iq_pack.py", "--gguf", shard1, "--out", pack_dir, "--compat-bf16", "--experts-bin")
 
-        if a.low_ram and not (pack_dir / "experts.bin").exists():
-            log("building experts.bin for low-RAM mmap mode ...")
-            run_tool("iq_pack.py", "--gguf", shard1, "--out", pack_dir, "--compat-bf16", "--experts-bin")
-
         args += [
             "--pack", str(pack_dir),
             "--native", str(shard1),
@@ -203,8 +200,8 @@ def main() -> int:
         if prof.exists():
             args += ["--expert-profile", str(prof)]
         args += ["--expert-cache", "auto", "--prefill", "auto"]
-        if a.low_ram:
-            args += ["--mmap-experts"]
+        if a.low_ram and "--resident-experts" not in a.extra_arg and "--mmap-experts" not in a.extra_arg:
+            args += ["--resident-experts"]
         tokenizer_dir = str(pack_dir / "tokenizer")
     else:
         args += ["--model", str(shard1)]
@@ -244,13 +241,11 @@ def main() -> int:
             "max_tokens": 300,
             "threads": 8,
         }
-        if a.vision_gpu:
+        if a.vision_gpu and "--vram-reserve-mib" not in a.extra_arg:
             args += ["--vram-reserve-mib", "700"]
 
-    # 5. Context and extra arguments
+    # 5. Context and extra arguments (only add YaRN if exceeding native 262K trained context)
     args += ["--max-context", str(a.context)]
-    if a.context >= 65536 and not a.low_ram and "--kv-resident" not in a.extra_arg:
-        args += ["--kv-resident", "32768"]
     if a.context > 262144 and "--rope-scaling" not in a.extra_arg:
         args += ["--rope-scaling", "yarn", "--rope-scale", f"{a.context / 262144:g}"]
     args += a.extra_arg
@@ -279,6 +274,9 @@ def main() -> int:
             cfg["api_key"] = key
     if a.sampling_json:
         cfg["sampling"] = json.loads(Path(a.sampling_json).read_text(encoding="utf-8"))
+    if a.extra_config_json:
+        extra_cfg = json.loads(Path(a.extra_config_json).read_text(encoding="utf-8"))
+        cfg.update(extra_cfg)
 
     out_path = Path(a.emit_config)
     out_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
